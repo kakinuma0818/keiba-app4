@@ -1,18 +1,13 @@
 import streamlit as st
-import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime
+import pandas as pd
+import re
 
-st.set_page_config(page_title="KEIBA APP", layout="wide")
-
-st.title("🏇 KEIBA APP（自動出馬表）")
-
-
-# -----------------------------
-# 競馬場コード変換
-# -----------------------------
-COURSE_MAP = {
+# -------------------------
+# 競馬場 → コード変換
+# -------------------------
+KEIBAJO_CODE = {
     "札幌": "01",
     "函館": "02",
     "福島": "03",
@@ -22,98 +17,128 @@ COURSE_MAP = {
     "中京": "07",
     "京都": "08",
     "阪神": "09",
-    "小倉": "10",
+    "小倉": "10"
 }
 
+# -------------------------------------------------------
+# 【1】開催カレンダーから開催回・日数を取得
+# -------------------------------------------------------
+def find_kaisaibi_and_day(date_str, keibajo):
+    """
+    入力日付と競馬場を元に netkeiba の開催情報を抽出して
+    ・開催回(1〜n回)
+    ・開催日（開催中の何日目か）
+    を返す
+    """
+    year, month, day = date_str.split("-")
+    cal_url = f"https://race.netkeiba.com/top/calendar.html?year={year}&month={month}"
 
-# -----------------------------
-# レースID生成（例：202507050211）
-# -----------------------------
-def generate_race_id(date, course_name, race_num):
-    course_code = COURSE_MAP[course_name]
-    date_str = date.strftime("%Y%m%d")
-    race_num_str = str(race_num).zfill(2)
+    r = requests.get(cal_url, headers={"User-Agent": "Mozilla/5.0"})
+    if r.status_code != 200:
+        return None, None
 
-    # 例：2025/07/05 東京11R → 202507050511
-    return f"{date_str}{course_code}{race_num_str}"
+    soup = BeautifulSoup(r.text, "html.parser")
 
+    # カレンダーの日付セルを探索
+    cells = soup.select("td.Calendar_Day")
 
-# -----------------------------
-# 出馬表取得（文字化け対応済）
-# -----------------------------
-def get_shutuba_table(race_id):
+    target_kaiji = None
+    target_day = None
 
+    for cell in cells:
+        # 日付マッチ
+        if cell.text.strip().startswith(str(int(day))):
+            # 同日の開催競馬場一覧取得
+            venues = cell.select("div.Calendar_Inner > a")
+            for v in venues:
+                if keibajo in v.text:
+                    # "中京4回2日" のような文字が入っている
+                    info = v.text.strip()
+                    m = re.search(r"(\d+)回(\d+)日", info)
+                    if m:
+                        target_kaiji = int(m.group(1))
+                        target_day = int(m.group(2))
+                        return target_kaiji, target_day
+
+    return None, None
+
+# -------------------------------------------------------
+# 【2】race_id を生成する
+# -------------------------------------------------------
+def generate_race_id(date_str, keibajo, race_no):
+    year = date_str.split("-")[0]
+    keibajo_code = KEIBAJO_CODE.get(keibajo)
+
+    kaiji, nichime = find_kaisaibi_and_day(date_str, keibajo)
+
+    if kaiji is None:
+        return None  # 開催情報が見つからない
+
+    # race_id 仕様：
+    #   YYYY + 場所コード + 開催回(2桁) + 日数(2桁) + レース番号(2桁)
+    race_id = f"{year}{keibajo_code}{kaiji:02d}{nichime:02d}{int(race_no):02d}"
+    return race_id
+
+# -------------------------------------------------------
+# 【3】race_id から出馬表を取得
+# -------------------------------------------------------
+def fetch_shutuba(race_id):
     url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
+    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+    if r.status_code != 200:
+        return None, url
 
-    response = requests.get(url)
-    response.encoding = response.apparent_encoding  # ← これが文字化け修正の核心
+    soup = BeautifulSoup(r.text, "html.parser")
 
-    soup = BeautifulSoup(response.text, "html.parser")
+    # 馬名
+    names = [e.text.strip() for e in soup.select(".HorseName")]
 
-    # 出馬表テーブル
-    table = soup.select_one("table.RaceTable01")
-    if table is None:
-        return None
+    # 人気・オッズ
+    odds = [e.text.strip() for e in soup.select(".Odds")]  
+    ninki = [e.text.strip() for e in soup.select(".Popular")]
 
-    rows = table.select("tr")
+    if len(names) == 0:
+        return None, url
 
-    data = []
-    for row in rows[1:]:
-        cols = [col.get_text(strip=True) for col in row.select("td")]
-        if cols:
-            data.append(cols)
+    df = pd.DataFrame({
+        "馬名": names,
+        "人気": ninki if len(ninki)==len(names) else ["-"]*len(names),
+        "オッズ": odds if len(odds)==len(names) else ["-"]*len(names),
+    })
 
-    # 列名（netkeibaの列構成に合わせる）
-    columns = [
-        "枠", "馬番", "馬名", "性齢", "斤量",
-        "騎手", "厩舎", "馬体重", "オッズ", "人気"
-    ]
+    return df, url
 
-    # 列が多い/少ない対応
-    df = pd.DataFrame(data)
-    df = df.iloc[:, :len(columns)]
-    df.columns = columns[: df.shape[1]]
+# -------------------------------------------------------
+# STREAMLIT UI
+# -------------------------------------------------------
+st.title("KEIBA APP 出馬表（自動 race_id 検索版）")
 
-    return df
+st.write("日付・競馬場・レース番号を選ぶだけでOK。race_id は自動生成されます。")
 
+# 入力UI
+date_input = st.date_input("日付を選択", format="YYYY-MM-DD")
+keibajo = st.selectbox("競馬場", list(KEIBAJO_CODE.keys()))
+race_no = st.number_input("レース番号", 1, 12, 11)
 
+if st.button("出馬表を取得"):
+    date_str = date_input.strftime("%Y-%m-%d")
 
-# -----------------------------
-# UI（競馬場・日付・レース番号）
-# -----------------------------
-st.subheader("🔧 レース選択")
+    st.write(f"入力：{date_str} / {keibajo} / {race_no}R")
 
-col1, col2, col3 = st.columns(3)
+    # race_id を生成
+    race_id = generate_race_id(date_str, keibajo, race_no)
 
-with col1:
-    date = st.date_input("日付を選択", datetime.today())
-
-with col2:
-    course = st.selectbox("競馬場", list(COURSE_MAP.keys()))
-
-with col3:
-    race_num = st.number_input("レース番号（1〜12）", 1, 12, 11)
-
-
-# -----------------------------
-# 実行
-# -----------------------------
-if st.button("出馬表を取得する"):
-
-    race_id = generate_race_id(date, course, race_num)
-    st.write(f"レースID: `{race_id}`")
-
-    df = get_shutuba_table(race_id)
-
-    if df is None:
-        st.error("レースページが見つかりませんでした。開催日が違う可能性があります。")
+    if race_id is None:
+        st.error("開催情報が取得できませんでした。（開催日 or 競馬場が未該当）")
+        st.info("→ 開催のない日付か、過去のデータの可能性があります。")
     else:
-        st.success("出馬表の取得に成功しました！")
-        st.dataframe(df, use_container_width=True)
+        st.success(f"生成された race_id：{race_id}")
 
-        st.download_button(
-            "📥 CSVとして保存",
-            df.to_csv(index=False).encode("utf-8-sig"),
-            file_name=f"shutuba_{race_id}.csv",
-            mime="text/csv"
-        )
+        df, url = fetch_shutuba(race_id)
+
+        if df is None:
+            st.error("出馬表が取得できませんでした。")
+            st.write("アクセスしたURL：", url)
+        else:
+            st.dataframe(df)
+            st.write("取得元：", url)
