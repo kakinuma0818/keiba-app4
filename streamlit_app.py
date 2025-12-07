@@ -42,7 +42,10 @@ st.markdown(
 )
 
 st.markdown('<div class="keiba-title">KEIBA APP</div>', unsafe_allow_html=True)
-st.markdown('<div class="keiba-subtitle">netkeiba レースURLから出馬表・スコア・馬券配分まで一括サポート</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="keiba-subtitle">netkeiba レースURLから出馬表・スコア・馬券配分まで一括サポート</div>',
+    unsafe_allow_html=True,
+)
 st.markdown("---")
 
 
@@ -163,7 +166,7 @@ def fetch_shutuba(race_id: str):
 
 
 # ======================
-# スコアリング
+# スコアリング（ベース）
 # ======================
 def score_age(sexage: str, surface: str) -> float:
     """
@@ -194,17 +197,16 @@ def score_age(sexage: str, surface: str) -> float:
             return 1.0
 
 
-def build_score_df(df: pd.DataFrame, meta: dict) -> pd.DataFrame:
+def build_base_score_df(df: pd.DataFrame, meta: dict) -> pd.DataFrame:
     """
-    SCタブ用スコアテーブルを作成
-    今は「年齢スコア + 手動」を基本にして合計スコアを作る。
-    他の項目は枠だけ用意してあとから拡張しやすくしておく。
+    SCタブ用ベーススコアテーブルを作成（手動・合計はここでは計算しない）
     """
     surface = meta.get("surface", "不明")
 
     sc = df.copy()
     sc["年齢"] = sc["性齢"].fillna("").apply(lambda x: score_age(x, surface))
-    # 他のスコア項目は0で初期化（あとから拡張）
+
+    # 他のスコア項目は0で初期化（あとから逐次拡張）
     sc["血統"] = 0.0
     sc["騎手スコア"] = 0.0
     sc["馬主"] = 0.0
@@ -217,26 +219,15 @@ def build_score_df(df: pd.DataFrame, meta: dict) -> pd.DataFrame:
     sc["枠スコア"] = 0.0
     sc["馬場"] = 0.0
 
-    # 手動スコアは session_state から読み書き
-    manual_scores = []
-    for i, row in sc.iterrows():
-        key = f"manual_score_{i}"
-        if key not in st.session_state:
-            st.session_state[key] = 0
-        manual_scores.append(st.session_state[key])
-    sc["手動"] = manual_scores
-
-    # 合計 = 各スコアの単純合算（今は年齢だけ有効で、他は0 + 手動）
-    base_cols = ["年齢", "血統", "騎手スコア", "馬主", "生産者", "調教師", "成績", "競馬場", "距離", "脚質", "枠スコア", "馬場"]
-    sc["合計"] = sc[base_cols].sum(axis=1) + sc["手動"]
-
     return sc
 
 
 # ======================
 # 馬券 自動配分ロジック
 # ======================
-def allocate_bets(bets_df: pd.DataFrame, total_budget: int, target_multiplier: float, loss_tolerance: float = 0.1):
+def allocate_bets(
+    bets_df: pd.DataFrame, total_budget: int, target_multiplier: float, loss_tolerance: float = 0.1
+):
     """
     bets_df: columns=["馬名","オッズ","購入"]（購入=True の行だけ対象）
     total_budget: 総投資額
@@ -289,7 +280,6 @@ def allocate_bets(bets_df: pd.DataFrame, total_budget: int, target_multiplier: f
 st.markdown("### 1. レース指定")
 
 col_url, col_dummy = st.columns([3, 1])
-
 with col_url:
     race_input = st.text_input(
         "netkeiba のレースURL または race_id（12桁）を入力",
@@ -313,10 +303,9 @@ if go and race_input.strip():
         else:
             race_df = df
             race_meta = meta
-
             st.success("出馬表の取得に成功しました ✅")
-            st.write(f"**レース名**: {meta.get('race_name','')}  ")
-            st.write(f"**概要**: {meta.get('race_info','')}  ")
+            st.write(f"**レース名**: {meta.get('race_name','')}")
+            st.write(f"**概要**: {meta.get('race_info','')}")
             st.write(f"**URL**: {meta.get('url','')}")
 
 
@@ -324,87 +313,153 @@ if go and race_input.strip():
 # レースデータがあるときだけタブ表示
 # ======================
 if race_df is not None:
-
     st.markdown("---")
     st.markdown("### 2. 分析タブ")
 
     tab_ma, tab_sc, tab_ai, tab_be, tab_pr = st.tabs(["出馬表", "スコア", "AIスコア", "馬券", "基本情報"])
 
-    # ---------- スコア計算 ----------
-    score_df = build_score_df(race_df, race_meta)
-    # 合計スコア順のランク
-    score_df = score_df.sort_values("合計", ascending=False).reset_index(drop=True)
-    score_df["スコア順"] = score_df.index + 1
+    # ---------- ベーススコア計算 ----------
+    base_score_df = build_base_score_df(race_df, race_meta)
 
-    # MA用に結合
-    ma_df = race_df.merge(score_df[["馬名", "合計", "スコア順"]], on="馬名", how="left")
-    ma_df = ma_df.sort_values("スコア順").reset_index(drop=True)
+    # SessionState 初期化
+    if "manual_scores" not in st.session_state:
+        st.session_state["manual_scores"] = {}  # {馬名: 手動スコア}
+    if "marks" not in st.session_state:
+        st.session_state["marks"] = {}  # {馬名: 印}
 
-    # ---------------- 出馬表タブ ----------------
-    with tab_ma:
-        st.markdown("#### 出馬表（スコア順 + 印）")
+    manual_scores = st.session_state["manual_scores"]
+    marks_state = st.session_state["marks"]
 
-        # 印プルダウン
-        marks = ["", "◎", "○", "▲", "△", "⭐︎", "×"]
-        mark_values = []
-        for i, row in ma_df.iterrows():
-            key = f"mark_{i}"
-            if key not in st.session_state:
-                st.session_state[key] = ""
-            val = st.selectbox(
-                f"{row['馬番']} {row['馬名']} の印",
-                marks,
-                index=marks.index(st.session_state[key]) if st.session_state[key] in marks else 0,
-                key=key,
-            )
-            st.session_state[key] = val
-            mark_values.append(val)
-        ma_df["印"] = mark_values
-
-        display_cols = ["枠", "馬番", "馬名", "性齢", "斤量", "前走体重", "騎手", "オッズ", "人気", "合計", "スコア順", "印"]
-        st.dataframe(ma_df[display_cols], use_container_width=True)
-
-        st.caption("※オッズ10倍以下やスコア上位6頭は、今後太字や色付けなどでハイライト予定。")
-
-    # ---------------- スコアタブ ----------------
+    # ---------------- スコアタブ（先に手動スコアを決める） ----------------
     with tab_sc:
         st.markdown("#### スコア詳細（手動補正あり）")
 
-        # 手動スコア入力UI（ここで session_state を更新してもう一度合計計算してもOK）
-        new_manuals = []
-        for i, row in score_df.iterrows():
-            key = f"manual_score_{i}"
-            current = st.session_state.get(key, 0)
-            val = st.selectbox(
-                f"{row['馬番']} {row['馬名']} 手動スコア",
-                options=[-3, -2, -1, 0, 1, 2, 3],
-                index=[-3, -2, -1, 0, 1, 2, 3].index(current),
-                key=key,
-            )
-            st.session_state[key] = val
-            new_manuals.append(val)
+        # 作業用コピー
+        score_df = base_score_df.copy()
 
-        score_df["手動"] = new_manuals
-        base_cols = ["年齢", "血統", "騎手スコア", "馬主", "生産者", "調教師", "成績", "競馬場", "距離", "脚質", "枠スコア", "馬場"]
+        options = [-3, -2, -1, 0, 1, 2, 3]
+
+        for i, row in score_df.iterrows():
+            horse_name = row["馬名"]
+            current = manual_scores.get(horse_name, 0)
+            try:
+                default_index = options.index(current)
+            except ValueError:
+                default_index = options.index(0)
+
+            val = st.selectbox(
+                f"{row['馬番']} {horse_name} 手動スコア",
+                options=options,
+                index=default_index,
+                key=f"manual_input_{i}",
+            )
+            manual_scores[horse_name] = val
+
+        # 手動スコア・合計スコアを反映
+        score_df["手動"] = score_df["馬名"].map(lambda n: manual_scores.get(n, 0))
+
+        base_cols = [
+            "年齢",
+            "血統",
+            "騎手スコア",
+            "馬主",
+            "生産者",
+            "調教師",
+            "成績",
+            "競馬場",
+            "距離",
+            "脚質",
+            "枠スコア",
+            "馬場",
+        ]
         score_df["合計"] = score_df[base_cols].sum(axis=1) + score_df["手動"]
 
-        # 再ソート
+        # 合計順で並べ替え
         score_df = score_df.sort_values("合計", ascending=False).reset_index(drop=True)
 
         sc_display = score_df[
-            ["馬名", "合計", "年齢", "血統", "騎手スコア", "馬主", "生産者", "調教師", "成績", "競馬場", "距離", "脚質", "枠スコア", "馬場", "手動"]
+            [
+                "馬名",
+                "合計",
+                "年齢",
+                "血統",
+                "騎手スコア",
+                "馬主",
+                "生産者",
+                "調教師",
+                "成績",
+                "競馬場",
+                "距離",
+                "脚質",
+                "枠スコア",
+                "馬場",
+                "手動",
+            ]
         ]
         st.dataframe(sc_display, use_container_width=True)
-        st.caption("※今は年齢スコア＋手動のみ有効。他項目は枠だけ用意してあり、あとから精密ロジックを追加予定。")
+        st.caption("※今は年齢スコア＋手動のみ有効。その他の細かい項目は順次ロジックを追加予定。")
+
+    # ---------------- 出馬表タブ ----------------
+    # スコアタブで決まった score_df を使って MA も構築する
+    with tab_ma:
+        st.markdown("#### 出馬表（スコア順 + 印）")
+
+        # スコア順を付けるため、合計で再ソート（SCタブと揃える）
+        ma_score = score_df[["馬名", "合計"]].copy()
+        ma_score["スコア順"] = ma_score["合計"].rank(ascending=False, method="min").astype(int)
+
+        ma_df = race_df.merge(ma_score, on="馬名", how="left")
+        ma_df = ma_df.sort_values("スコア順").reset_index(drop=True)
+
+        # 印プルダウン（馬名ごとに SessionState 管理）
+        mark_opts = ["", "◎", "○", "▲", "△", "⭐︎", "×"]
+        marks_for_df = []
+        for i, row in ma_df.iterrows():
+            horse_name = row["馬名"]
+            current_mark = marks_state.get(horse_name, "")
+            try:
+                default_index = mark_opts.index(current_mark)
+            except ValueError:
+                default_index = 0
+
+            val = st.selectbox(
+                f"{row['馬番']} {horse_name} の印",
+                mark_opts,
+                index=default_index,
+                key=f"mark_input_{i}",
+            )
+            marks_state[horse_name] = val
+            marks_for_df.append(val)
+
+        ma_df["印"] = marks_for_df
+
+        display_cols = [
+            "枠",
+            "馬番",
+            "馬名",
+            "性齢",
+            "斤量",
+            "前走体重",
+            "騎手",
+            "オッズ",
+            "人気",
+            "合計",
+            "スコア順",
+            "印",
+        ]
+        st.dataframe(ma_df[display_cols], use_container_width=True)
+
+        st.caption("※オッズ10倍以下やスコア上位6頭のハイライトは、今後スタイル指定で追加予定。")
 
     # ---------------- AIスコアタブ ----------------
     with tab_ai:
-        st.markdown("#### AIスコア（枠だけ）")
-        st.write("※現時点では SCタブの合計スコアと同じ値を表示。将来的に別ロジックのAIスコアを追加予定。")
+        st.markdown("#### AIスコア")
+        st.write("※現時点では SCタブの合計スコアをそのまま AIスコアとして表示。将来的に別ロジックを追加予定。")
 
         ai_df = score_df[["馬名", "合計"]].copy()
         ai_df.rename(columns={"合計": "AIスコア"}, inplace=True)
-        st.dataframe(ai_df.sort_values("AIスコア", ascending=False), use_container_width=True)
+        ai_df = ai_df.sort_values("AIスコア", ascending=False).reset_index(drop=True)
+        st.dataframe(ai_df, use_container_width=True)
 
     # ---------------- 馬券タブ ----------------
     with tab_be:
@@ -412,11 +467,15 @@ if race_df is not None:
 
         col_b1, col_b2 = st.columns(2)
         with col_b1:
-            total_budget = st.number_input("総投資額（円）", min_value=100, max_value=1000000, value=1000, step=100)
+            total_budget = st.number_input(
+                "総投資額（円）", min_value=100, max_value=1000000, value=1000, step=100
+            )
         with col_b2:
-            target_mult = st.slider("希望払い戻し倍率", min_value=1.0, max_value=10.0, value=1.5, step=0.5)
+            target_mult = st.slider(
+                "希望払い戻し倍率", min_value=1.0, max_value=10.0, value=1.5, step=0.5
+            )
 
-        st.write("チェックした馬券（今は単純に各馬の“1点”想定）に対して、自動で金額配分します。")
+        st.write("チェックした馬券（今は単純に各馬の“単勝1点”想定）に対して、自動で金額配分します。")
 
         # 購入フラグ
         bet_df = ma_df[["馬名", "オッズ"]].copy()
@@ -428,7 +487,9 @@ if race_df is not None:
             if edited["購入"].sum() == 0:
                 st.warning("少なくとも1頭は購入にチェックしてください。")
             else:
-                alloc_df, info = allocate_bets(edited, total_budget, target_mult, loss_tolerance=0.1)
+                alloc_df, info = allocate_bets(
+                    edited, total_budget, target_mult, loss_tolerance=0.1
+                )
                 st.subheader("推奨配分結果")
                 st.dataframe(alloc_df, use_container_width=True)
 
@@ -449,6 +510,7 @@ if race_df is not None:
     with tab_pr:
         st.markdown("#### 基本情報（PR）")
         st.write("※今は出馬表の基本情報のみ表示。馬主・生産者・調教師などは今後追加予定。")
+
         pr_cols = ["枠", "馬番", "馬名", "性齢", "斤量", "前走体重", "騎手", "オッズ", "人気"]
         st.dataframe(race_df[pr_cols], use_container_width=True)
 
