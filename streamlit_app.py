@@ -73,25 +73,27 @@ def fetch_shutuba(race_id: str):
     name_el = soup.select_one(".RaceName")
     race_name = name_el.get_text(strip=True) if name_el else ""
 
-    # 概要（頭数・距離・馬場など）
+    # 概要（距離・馬場など）
     info_el = soup.select_one(".RaceData01")
     race_info = info_el.get_text(" ", strip=True) if info_el else ""
 
-    # 出馬数を race_info に統合
+    # 出馬数（頭数）
     horse_rows = soup.select("table.RaceTable01 tr")[1:]
-   頭数 = len(horse_rows)
-    race_info += f"　頭数:{頭数}"
+    headcount = len(horse_rows)
+    race_info += f"　頭数:{headcount}"
 
-    # 芝/ダートと距離
+    # 芝/ダート
     surface = "不明"
     if "芝" in race_info:
         surface = "芝"
     elif "ダ" in race_info:
         surface = "ダート"
+
+    # 距離
     m = re.search(r"(\d+)m", race_info)
     distance = int(m.group(1)) if m else None
 
-    # 出馬表
+    # 出馬表テーブル
     table = soup.select_one("table.RaceTable01")
     if not table:
         return None, {"race_name": race_name, "race_info": race_info, "surface": surface, "distance": distance}
@@ -135,7 +137,7 @@ def fetch_shutuba(race_id: str):
         "race_info": race_info,
         "surface": surface,
         "distance": distance,
-        "headcount": 頭数,
+        "headcount": headcount,
         "url": url,
     }
     return df, meta
@@ -174,7 +176,7 @@ def build_score(df, meta):
     surface = meta["surface"]
     sc = df.copy()
     sc["年齢"] = sc["性齢"].apply(lambda x: score_age(x, surface))
-    sc["合計"] = sc["年齢"]  # 現状は年齢のみ
+    sc["合計"] = sc["年齢"]
     return sc
 
 
