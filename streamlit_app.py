@@ -8,7 +8,7 @@ import streamlit as st
 # ======================
 # ページ設定 & テーマ
 # ======================
-st.set_page_config(page_title="競馬アプリ", layout="wide")
+st.set_page_config(page_title="KEIBA APP", layout="wide")
 
 PRIMARY = "#ff7f00"  # エルメスオレンジ
 
@@ -210,7 +210,7 @@ def build_score_base(df: pd.DataFrame, meta: dict) -> pd.DataFrame:
                 "成績", "競馬場", "距離", "脚質", "枠スコア", "馬場"]:
         sc[col] = 0.0
 
-    # 手動スコアは最初0でスタート（編集はUI側）
+    # 手動スコアは 0 でスタート（UI側で編集）
     sc["手動"] = 0.0
 
     # 合計（初期値）は年齢だけ
@@ -222,7 +222,7 @@ def build_score_base(df: pd.DataFrame, meta: dict) -> pd.DataFrame:
 
 
 # ======================
-# 画面：レース指定
+# 1. レース指定
 # ======================
 st.markdown("### 1. レース指定（URL または race_id）")
 
@@ -265,14 +265,13 @@ tab_ma, tab_sc, tab_ai, tab_be, tab_pr = st.tabs(
 # 出馬表タブ
 # ======================
 with tab_ma:
-    st.markdown("#### 出馬表")
+    st.markdown("#### 出馬表（印つき・行ごと選択）")
 
     if race_df is None:
         st.info("上でレースURL / race_id を入力すると出馬表が表示されます。")
     else:
         # スコアベース作成
         score_base = build_score_base(race_df, race_meta)
-        # 合計スコア順
         score_base = score_base.sort_values("合計", ascending=False).reset_index(drop=True)
         score_base["スコア順"] = score_base.index + 1
 
@@ -281,55 +280,43 @@ with tab_ma:
             score_base[["馬名", "合計", "スコア順"]],
             on="馬名",
             how="left",
-        )
+        ).sort_values("スコア順").reset_index(drop=True)
 
-        # 印用の初期列
-        if "印" not in ma_df.columns:
-            ma_df["印"] = ""
+        # 印を行ごとに selectbox で入力
+        marks = ["", "◎", "○", "▲", "△", "⭐︎", "×"]
+        mark_list = []
+        st.caption("※ 下の表に反映される印を、上のプルダウンで1頭ずつ選択してください。")
 
-        st.caption("※ 印と一部項目はここで編集できます（編集内容はこの画面内で保持）。")
+        for i, row in ma_df.iterrows():
+            val = st.selectbox(
+                f"{row['馬番']} {row['馬名']} の印",
+                marks,
+                key=f"mark_{i}",
+            )
+            mark_list.append(val)
 
-        # inline 編集用 DataFrame
-        edited_ma = st.data_editor(
-            ma_df,
+        ma_df["印"] = mark_list
+
+        st.dataframe(
+            ma_df[["枠", "馬番", "馬名", "性齢", "斤量", "前走体重",
+                   "騎手", "オッズ", "人気", "合計", "スコア順", "印"]],
             use_container_width=True,
-            num_rows="fixed",
-            column_config={
-                "枠": st.column_config.TextColumn("枠", width="small"),
-                "馬番": st.column_config.TextColumn("馬番", width="small"),
-                "馬名": st.column_config.TextColumn("馬名", width="medium"),
-                "性齢": st.column_config.TextColumn("性齢", width="small"),
-                "斤量": st.column_config.TextColumn("斤量", width="small"),
-                "前走体重": st.column_config.TextColumn("前走体重", width="small"),
-                "騎手": st.column_config.TextColumn("騎手", width="medium"),
-                "オッズ": st.column_config.NumberColumn("オッズ", width="small", format="%.1f"),
-                "人気": st.column_config.NumberColumn("人気", width="small", format="%d"),
-                "合計": st.column_config.NumberColumn("スコア", width="small"),
-                "スコア順": st.column_config.NumberColumn("スコア順", width="small"),
-                "印": st.column_config.SelectboxColumn(
-                    "印",
-                    options=["", "◎", "○", "▲", "△", "⭐︎", "×"],
-                ),
-            },
-            hide_index=True,
         )
-
-        st.success("出馬表の編集（印含む）は反映されています。")
-
 
 # ======================
 # スコアタブ
 # ======================
 with tab_sc:
-    st.markdown("#### スコア（年齢＋手動スコア 仮実装）")
+    st.markdown("#### スコア（年齢＋手動スコア 仮）")
 
     if race_df is None:
         st.info("レースを指定するとスコアが表示されます。")
     else:
         base_sc = build_score_base(race_df, race_meta)
 
-        st.caption("※ 手動スコアを編集 → 下に合計再計算結果を表示します。")
+        st.caption("※ 手動スコアを編集 → 下で合計とスコア順を再計算します。")
 
+        # 手動だけ編集できるテーブル
         editable_sc = st.data_editor(
             base_sc,
             use_container_width=True,
@@ -363,7 +350,6 @@ with tab_sc:
             use_container_width=True,
         )
 
-
 # ======================
 # AIスコアタブ（仮）
 # ======================
@@ -379,7 +365,6 @@ with tab_ai:
         st.dataframe(ai_df, use_container_width=True)
         st.caption("※ 現時点では SCタブ合計と同じ値です。今後、別ロジックに差し替えます。")
 
-
 # ======================
 # 馬券タブ（超仮）
 # ======================
@@ -390,7 +375,6 @@ with tab_be:
     else:
         st.write("・総投資額、希望払い戻し倍率、馬券の種類などをここに実装予定。")
         st.write("・今は仕様確認用の仮置きです。")
-
 
 # ======================
 # 基本情報タブ（仮）
