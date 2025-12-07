@@ -1,0 +1,27 @@
+:root {
+    --main-bg: #ffffff;
+    --main-text: #000000;
+    --accent: #ff7f00; /* エルメスオレンジ */
+    --gray: #e0e0e0;
+}
+
+body {
+    background-color: var(--main-bg);
+    color: var(--main-text);
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+
+.block-title {
+    padding: 8px 16px;
+    border-left: 4px solid var(--accent);
+    font-weight: bold;
+    font-size: 18px;
+    margin-top: 12px;
+}
+
+.button-primary {
+    background-color: var(--accent) !important;
+    color: white !important;
+    border-radius: 8px;
+    padding: 10px;
+}
