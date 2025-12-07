@@ -64,7 +64,41 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 # ---------------------------------------------------------
 
 with tab1:
-    st.markdown('<div class="section-box"><h3>出馬表（準備中）</h3></div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="section-box">', unsafe_allow_html=True)
+    st.markdown("### 🏇 出馬表（テストデータ）")
+
+    import pandas as pd
+
+    # サンプルデータ（あとであなたのCSV読み込みに差し替え可能）
+    df = pd.DataFrame({
+        "馬番": [1, 2, 3],
+        "馬名": ["サンプルホースA", "サンプルホースB", "サンプルホースC"],
+        "脚質": ["先行", "差し", "逃げ"],
+        "適性": ["ダート1800", "芝2400", "芝2000"],
+        "人気": [2, 4, 1],
+        "スコア": [78, 65, 82]
+    })
+
+    # テーブルのスタイル設定
+    st.markdown("""
+        <style>
+        .dataframe td {
+            text-align: center !important;
+            padding: 6px !important;
+        }
+        .dataframe th {
+            text-align: center !important;
+            background: #FF7F00 !important;
+            color: white !important;
+            padding: 6px !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+    st.dataframe(df, use_container_width=True)
+
+    st.markdown('</div>', unsafe_allow_html=True)
 
 with tab2:
     st.markdown('<div class="section-box"><h3>スコア（準備中）</h3></div>', unsafe_allow_html=True)
