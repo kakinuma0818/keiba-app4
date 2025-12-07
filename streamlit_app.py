@@ -29,13 +29,6 @@ st.markdown(
         font-size: 0.9rem;
         color: #555555;
     }}
-    .accent {{
-        color: {PRIMARY};
-    }}
-    .small-label {{
-        font-size: 0.8rem;
-        color: #666666;
-    }}
     </style>
     """,
     unsafe_allow_html=True,
@@ -47,6 +40,14 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.markdown("---")
+
+# ======================
+# session_state 初期化
+# ======================
+if "race_df" not in st.session_state:
+    st.session_state["race_df"] = None
+if "race_meta" not in st.session_state:
+    st.session_state["race_meta"] = None
 
 
 # ======================
@@ -67,7 +68,7 @@ def parse_race_id(text: str):
 
 
 # ======================
-# 出馬表スクレイピング（PC版HTML固定 & 文字化け対策）
+# 出馬表スクレイピング
 # ======================
 def fetch_shutuba(race_id: str):
     """
@@ -88,19 +89,18 @@ def fetch_shutuba(race_id: str):
     if r.status_code != 200:
         return None, None
 
-    # 文字化け防止
-    r.encoding = r.apparent_encoding
+    r.encoding = r.apparent_encoding  # 文字化け防止
     soup = BeautifulSoup(r.text, "html.parser")
 
-    # --- レース名 ---
+    # レース名
     race_name_el = soup.select_one(".RaceName")
     race_name = race_name_el.get_text(strip=True) if race_name_el else ""
 
-    # --- 概要 ---
+    # 概要
     race_info_el = soup.select_one(".RaceData01")
     race_info = race_info_el.get_text(" ", strip=True) if race_info_el else ""
 
-    # --- 芝 / ダート と 距離 ---
+    # 芝 / ダート & 距離
     surface = "不明"
     distance = None
     if "芝" in race_info:
@@ -111,10 +111,9 @@ def fetch_shutuba(race_id: str):
     if m_dist:
         distance = int(m_dist.group(1))
 
-    # --- 出馬表テーブル ---
+    # 出馬表テーブル
     table = soup.select_one("table.RaceTable01")
     if table is None:
-        # PC版レイアウトが取れなかった場合は失敗扱いにする
         return None, None
 
     header_row = table.find("tr")
@@ -160,12 +159,9 @@ def fetch_shutuba(race_id: str):
         )
 
     df = pd.DataFrame(horse_rows)
-
-    # 数値化
     for col in ["オッズ", "人気"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # 頭数を race_info に統合
     headcount = len(df)
     if headcount > 0 and f"{headcount}頭" not in race_info:
         race_info = race_info + f"　/　{headcount}頭"
@@ -185,11 +181,6 @@ def fetch_shutuba(race_id: str):
 # 年齢スコア
 # ======================
 def score_age(sexage: str, surface: str) -> float:
-    """
-    性齢(牡4, 牝3 など)と芝/ダートから年齢スコア
-    - 芝: 3〜5歳=3, 6歳=2, 7歳以上=1
-    - ダ: 3〜4歳=3, 5歳=2, 6歳=1.5, 7歳以上=1
-    """
     m = re.search(r"(\d+)", sexage)
     if not m:
         return 2.0
@@ -204,7 +195,7 @@ def score_age(sexage: str, surface: str) -> float:
             return 1.5
         else:
             return 1.0
-    else:  # 芝 or 不明
+    else:
         if 3 <= age <= 5:
             return 3.0
         elif age == 6:
@@ -214,7 +205,7 @@ def score_age(sexage: str, surface: str) -> float:
 
 
 # ======================
-# スコアテーブル生成（現時点は年齢＋手動）
+# スコアテーブル
 # ======================
 def build_score_df(df: pd.DataFrame, meta: dict) -> pd.DataFrame:
     surface = meta.get("surface", "不明")
@@ -222,7 +213,6 @@ def build_score_df(df: pd.DataFrame, meta: dict) -> pd.DataFrame:
     sc = df.copy()
     sc["年齢"] = sc["性齢"].fillna("").apply(lambda x: score_age(x, surface))
 
-    # 他項目はまだ 0（あとで本格ロジックを追加）
     for col in [
         "血統",
         "騎手スコア",
@@ -238,7 +228,6 @@ def build_score_df(df: pd.DataFrame, meta: dict) -> pd.DataFrame:
     ]:
         sc[col] = 0.0
 
-    # 手動スコアは、まず session_state から初期値だけ読む
     manual_vals = []
     for i in range(len(sc)):
         key = f"manual_score_{i}"
@@ -268,12 +257,6 @@ def build_score_df(df: pd.DataFrame, meta: dict) -> pd.DataFrame:
 # 馬券 自動配分
 # ======================
 def allocate_bets(bets_df, total_budget, target_multiplier, loss_tolerance=0.1):
-    """
-    bets_df: 馬名, オッズ, 購入(True/False)
-    total_budget: 総投資額
-    target_multiplier: 希望払い戻し倍率
-    loss_tolerance: 下振れ許容（0.1 = -10%）
-    """
     P = total_budget * target_multiplier
     threshold = P * (1 - loss_tolerance)
 
@@ -288,7 +271,7 @@ def allocate_bets(bets_df, total_budget, target_multiplier, loss_tolerance=0.1):
             stake = 0
         else:
             raw = threshold / odds
-            stake = int(math.ceil(raw / 100) * 100)  # 100円単位に切り上げ
+            stake = int(math.ceil(raw / 100) * 100)
 
         payout = stake * odds
         needed_total += stake
@@ -303,7 +286,6 @@ def allocate_bets(bets_df, total_budget, target_multiplier, loss_tolerance=0.1):
         )
 
     alloc_df = pd.DataFrame(results)
-
     info = {
         "目標払い戻し額": P,
         "許容下限": threshold,
@@ -314,7 +296,7 @@ def allocate_bets(bets_df, total_budget, target_multiplier, loss_tolerance=0.1):
 
 
 # ======================
-# UI：レース入力
+# 1. レース指定 UI
 # ======================
 st.markdown("### 1. レース指定")
 
@@ -324,9 +306,6 @@ race_input = st.text_input(
 )
 go = st.button("このレースを読み込む")
 
-race_df = None
-race_meta = None
-
 if go and race_input.strip():
     race_id = parse_race_id(race_input)
     if not race_id:
@@ -335,37 +314,53 @@ if go and race_input.strip():
         with st.spinner("出馬表を取得中..."):
             df, meta = fetch_shutuba(race_id)
         if df is None or df.empty:
-            st.error("出馬表の取得に失敗しました。レースID やページ構造を確認してください。")
+            st.error("出馬表の取得に失敗しました。")
         else:
-            race_df = df
-            race_meta = meta
-            st.success("出馬表の取得に成功しました ✅")
-            st.write(f"**レース名**：{meta.get('race_name','')}")
-            st.write(f"**概要**：{meta.get('race_info','')}")
-            st.write(f"[netkeibaページを開く]({meta.get('url','')})")
+            st.session_state["race_df"] = df
+            st.session_state["race_meta"] = meta
+            st.success("出馬表を取得しました ✅")
 
+race_df = st.session_state["race_df"]
+race_meta = st.session_state["race_meta"]
+
+if race_meta:
+    st.write(f"**レース名**：{race_meta.get('race_name','')}")
+    st.write(f"**概要**：{race_meta.get('race_info','')}")
+    if race_meta.get("url"):
+        st.write(f"[netkeibaページを開く]({race_meta['url']})")
 
 # ======================
-# タブ表示（出馬表が取れたときだけ）
+# 2. タブ（常に表示）
 # ======================
-if race_df is not None and race_meta is not None:
-    st.markdown("---")
-    st.markdown("### 2. 出馬表・スコア・馬券")
+st.markdown("---")
+st.markdown("### 2. 出馬表・スコア・馬券")
 
-    tab_ma, tab_sc, tab_ai, tab_be, tab_pr = st.tabs(
-        ["出馬表", "スコア", "AIスコア", "馬券", "基本情報"]
-    )
+tab_ma, tab_sc, tab_ai, tab_be, tab_pr = st.tabs(
+    ["出馬表", "スコア", "AIスコア", "馬券", "基本情報"]
+)
 
-    # ---- スコア計算 ----
+# ---------- 共通：race_df が無いとき ----------
+if race_df is None or race_meta is None:
+    with tab_ma:
+        st.info("まず上でレースURL / race_id を入力して『このレースを読み込む』を押してください。")
+    with tab_sc:
+        st.info("レースを読み込むとスコアが表示されます。")
+    with tab_ai:
+        st.info("レースを読み込むとAIスコアが表示されます。")
+    with tab_be:
+        st.info("レースを読み込むと馬券配分ツールが使えます。")
+    with tab_pr:
+        st.info("レースを読み込むと基本情報が表示されます。")
+else:
+    # ========= スコア計算 =========
     score_df = build_score_df(race_df, race_meta)
     score_df = score_df.sort_values("合計", ascending=False).reset_index(drop=True)
     score_df["スコア順"] = score_df.index + 1
+    ma_df = race_df.merge(
+        score_df[["馬名", "合計", "スコア順"]], on="馬名", how="left"
+    ).sort_values("スコア順").reset_index(drop=True)
 
-    # 出馬表 + スコア結合
-    ma_df = race_df.merge(score_df[["馬名", "合計", "スコア順"]], on="馬名", how="left")
-    ma_df = ma_df.sort_values("スコア順").reset_index(drop=True)
-
-    # ========== 出馬表タブ ==========
+    # ========= 出馬表タブ =========
     with tab_ma:
         st.markdown("#### 出馬表（印つき・スコア順）")
 
@@ -374,7 +369,6 @@ if race_df is not None and race_meta is not None:
 
         for i, row in ma_df.iterrows():
             key = f"mark_{i}"
-            # 初期値だけ session_state から読む（再代入しない）
             default_mark = st.session_state.get(key, "")
             if default_mark not in marks:
                 default_mark = ""
@@ -384,7 +378,7 @@ if race_df is not None and race_meta is not None:
                 f"{row['馬番']} {row['馬名']} の印",
                 marks,
                 index=idx,
-                key=key,  # ← ここで管理。後から session_state[key] を上書きしない
+                key=key,
             )
             mark_values.append(val)
 
@@ -406,12 +400,9 @@ if race_df is not None and race_meta is not None:
                 "印",
             ]
         ]
-
         st.dataframe(ma_display, width="stretch")
 
-        st.caption("※ オッズ10倍以下・スコア上位6頭の強調表示などは、このあと反映予定。")
-
-    # ========== スコアタブ ==========
+    # ========= スコアタブ =========
     with tab_sc:
         st.markdown("#### スコア詳細（手動補正つき）")
 
@@ -419,19 +410,17 @@ if race_df is not None and race_meta is not None:
         for i, row in score_df.iterrows():
             key = f"manual_score_{i}"
             default_manual = st.session_state.get(key, 0)
-            # セレクトボックス生成（ここで session_state を再代入しない）
+            if default_manual not in [-3, -2, -1, 0, 1, 2, 3]:
+                default_manual = 0
             val = st.selectbox(
                 f"{row['馬番']} {row['馬名']} 手動スコア",
                 [-3, -2, -1, 0, 1, 2, 3],
-                index=[-3, -2, -1, 0, 1, 2, 3].index(
-                    default_manual if default_manual in [-3, -2, -1, 0, 1, 2, 3] else 0
-                ),
+                index=[-3, -2, -1, 0, 1, 2, 3].index(default_manual),
                 key=key,
             )
             new_manual.append(val)
 
         score_df["手動"] = new_manual
-
         base_cols = [
             "年齢",
             "血統",
@@ -468,17 +457,15 @@ if race_df is not None and race_meta is not None:
                 "手動",
             ]
         ]
-
         st.dataframe(sc_display, width="stretch")
-        st.caption("※ 現時点では 年齢スコア ＋ 手動のみ有効。他の項目ロジックは今後追加。")
 
-    # ========== AIスコア（暫定） ==========
+    # ========= AIスコアタブ =========
     with tab_ai:
         st.markdown("#### AIスコア（暫定）")
         ai_df = score_df[["馬名", "合計"]].rename(columns={"合計": "AIスコア"})
         st.dataframe(ai_df.sort_values("AIスコア", ascending=False), width="stretch")
 
-    # ========== 馬券タブ ==========
+    # ========= 馬券タブ =========
     with tab_be:
         st.markdown("#### 馬券配分（単勝イメージ）")
 
@@ -492,7 +479,6 @@ if race_df is not None and race_meta is not None:
 
         bet_df = ma_df[["馬名", "オッズ"]].copy()
         bet_df["購入"] = False
-
         edited = st.data_editor(bet_df, num_rows="fixed", width="stretch")
 
         if st.button("自動配分を計算"):
@@ -512,15 +498,7 @@ if race_df is not None and race_meta is not None:
                     st.write(f"- 必要合計金額: **{int(info['必要合計金額'])}円**")
                     st.write(f"- 残り予算: **{int(info['残り予算'])}円**")
 
-                    if info["必要合計金額"] > total_budget:
-                        st.error("💡 現在の総投資額では、全ての馬券で目標払い戻しを満たせません。")
-                        st.write("・総投資額を増やすか")
-                        st.write("・希望払い戻し倍率を下げるか")
-                        st.write("・購入する点数を減らしてください。")
-                    else:
-                        st.success("どれか1点的中で、少なくとも下限払い戻しを確保できる配分です。")
-
-    # ========== 基本情報タブ ==========
+    # ========= 基本情報タブ =========
     with tab_pr:
         st.markdown("#### 基本情報")
         pr_cols = [
@@ -535,6 +513,3 @@ if race_df is not None and race_meta is not None:
             "人気",
         ]
         st.dataframe(race_df[pr_cols], width="stretch")
-
-else:
-    st.info("上の入力欄に netkeiba のレースURL または race_id を入力して「このレースを読み込む」を押してください。")
